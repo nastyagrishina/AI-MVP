@@ -34,6 +34,7 @@ User message
 | `src/mcp.ts` | MCP stdio server — exposes `get_refund_policy` tool |
 | `src/rag.ts` | In-memory RAG — embeds 3 company-history docs, exports `search_company_history` tool |
 | `src/graph.ts` | LangGraph orchestrator — PII redaction → agent loop → tool execution |
+| `src/chat.ts` | Interactive CLI chat loop — readline REPL that reuses one graph session |
 
 ## Prerequisites
 
@@ -53,6 +54,39 @@ OPENAI_API_KEY=sk-...
 ```
 
 ## Running
+
+### Interactive chat (recommended for exploring)
+
+```bash
+npm run chat
+```
+
+This starts a live terminal session. Type any question and press Enter:
+
+```
+Starting up — connecting to MCP server and building RAG index…
+Ready. Type a question or "exit" to quit.
+
+You: how many days do I have for a refund?
+  [tools called] get_refund_policy
+  [tool result]  get_refund_policy → { "policy": "Refunds allowed within 30 days" }
+
+Agent: You have 30 days to request a refund.
+
+You: when was the company founded?
+  [tools called] search_company_history
+  [tool result]  search_company_history → Acme Corp was founded in 1998 by Alice and Bob…
+
+Agent: Acme Corp was founded in 1998.
+
+You: exit
+```
+
+- Each question is answered independently (no memory between turns).
+- Lines starting with `[tools called]` and `[tool result]` show you which tools the agent used and a preview of what they returned.
+- Type `exit`, `quit`, or press `Ctrl+D` to quit cleanly.
+
+### One-shot demo
 
 ```bash
 npm run dev

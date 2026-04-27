@@ -4,6 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "chat": "tsx src/chat.ts",
     "dev": "tsx src/graph.ts",
     "mcp": "tsx src/mcp.ts",
     "test": "echo \"Error: no test specified\" && exit 1"

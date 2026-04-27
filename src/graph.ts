@@ -21,7 +21,7 @@ import { createSearchCompanyHistoryTool } from "./rag.js";
 const EMAIL_RE = /\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/g;
 
 
-async function buildGraph() {
+export async function buildGraph() {
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const mcpScriptPath = join(__dirname, "mcp.ts");
   const transport = new StdioClientTransport({
@@ -88,11 +88,21 @@ async function buildGraph() {
     };
   };
 
+  const AGENT_SYSTEM = new SystemMessage(
+    "You are a helpful assistant with access to two tools: " +
+      "a company knowledge base (RAG) and a refund policy tool (MCP). " +
+      "Always use the available tools to answer questions. " +
+      "If the tools return no relevant information, or if the question is outside " +
+      "the scope of what the tools can answer, reply with exactly: " +
+      '"[No Answer] Unfortunately, there\'s no information present for this question in the documents." ' +
+      "Do not invent facts or answer from general knowledge.",
+  );
+
   // AgentNode:
   // Receives the already-scrubbed message list. Calls gpt-4o with all tools
   // bound; the model decides whether to invoke a tool or respond directly.
   const agentNode = async (state: typeof MessagesAnnotation.State) => {
-    const response = await agentLLM.invoke(state.messages);
+    const response = await agentLLM.invoke([AGENT_SYSTEM, ...state.messages]);
     return { messages: [response] };
   };
 
@@ -141,4 +151,9 @@ async function main() {
   }
 }
 
-void main();
+// Only run the one-shot demo when this file is the direct entry point
+// (i.e. `tsx src/graph.ts`). When chat.ts imports buildGraph, main() is skipped.
+const __filename = fileURLToPath(import.meta.url);
+if (process.argv[1] === __filename) {
+  void main();
+}

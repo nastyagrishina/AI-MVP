@@ -22,6 +22,7 @@ export async function createSearchCompanyHistoryTool() {
   return tool(
     async ({ query }: { query: string }) => {
       const results = await store.similaritySearch(query, 3);
+      if (results.length === 0) return "NO_RESULTS: No relevant company history found.";
       return results.map((doc) => doc.pageContent).join("\n\n");
     },
     {
