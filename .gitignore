@@ -19,3 +19,6 @@
 *.tsbuildinfo
 node_modules/
 dist/
+
+# Agents
+.cursor/
