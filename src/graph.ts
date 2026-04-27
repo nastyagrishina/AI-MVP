@@ -9,6 +9,7 @@ import {
   SystemMessage,
 } from "@langchain/core/messages";
 import { ChatOpenAI } from "@langchain/openai";
+import { ChatAnthropic } from "@langchain/anthropic";
 import { END, MessagesAnnotation, START, StateGraph } from "@langchain/langgraph";
 import { ToolNode, toolsCondition } from "@langchain/langgraph/prebuilt";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -38,13 +39,44 @@ export async function buildGraph() {
 
   const allTools = [...mcpTools, ragTool];
 
-  // LLMs:
-  // Fast model used only for PII name-redaction in RedactNode
-  const miniLLM = new ChatOpenAI({ model: "gpt-4o-mini", temperature: 0 });
-  // Main agent model with all tools bound
-  const agentLLM = new ChatOpenAI({ model: "gpt-4o", temperature: 0 }).bindTools(
-    allTools,
-  );
+  // Returns true for OpenAI 429 rate-limit errors (LangChain tags them with
+  // lc_error_code: "MODEL_RATE_LIMIT").
+  const isRateLimit = (e: unknown): boolean =>
+    !!e &&
+    typeof e === "object" &&
+    "lc_error_code" in e &&
+    (e as { lc_error_code: string }).lc_error_code === "MODEL_RATE_LIMIT";
+
+  const miniPrimary = new ChatOpenAI({ model: "gpt-4o-mini", temperature: 0 });
+  const miniFallback = new ChatAnthropic({ model: "claude-haiku-4-5", temperature: 0 });
+
+  const agentPrimary = new ChatOpenAI({ model: "gpt-4o", temperature: 0 }).bindTools(allTools);
+  const agentFallback = new ChatAnthropic({ model: "claude-sonnet-4-5", temperature: 0 }).bindTools(allTools);
+
+  // Thin wrappers that catch rate-limit errors and retry on the backup provider.
+  const miniLLM = {
+    invoke: async (messages: Parameters<typeof miniPrimary.invoke>[0]) => {
+      try {
+        return await miniPrimary.invoke(messages);
+      } catch (e) {
+        if (!isRateLimit(e)) throw e;
+        console.error("  [fallback] gpt-4o-mini rate-limited → switching to claude-haiku-4-5");
+        return miniFallback.invoke(messages);
+      }
+    },
+  };
+
+  const agentLLM = {
+    invoke: async (messages: Parameters<typeof agentPrimary.invoke>[0]) => {
+      try {
+        return await agentPrimary.invoke(messages);
+      } catch (e) {
+        if (!isRateLimit(e)) throw e;
+        console.error("  [fallback] gpt-4o rate-limited → switching to claude-sonnet-4-5");
+        return agentFallback.invoke(messages);
+      }
+    },
+  };
 
   // RedactNode: Hybrid PII scrubbing
   //   1. Regex replaces email addresses → [REDACTED_EMAIL]

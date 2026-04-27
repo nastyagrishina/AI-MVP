@@ -51,6 +51,7 @@ Create a `.env` file in the project root:
 
 ```
 OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...   # fallback provider — required for rate-limit fallback
 ```
 
 ## Running
