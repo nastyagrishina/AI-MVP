@@ -1,45 +1,52 @@
-# Local TypeScript AI Agent MVP
+# AI Insurance & Finance Agent
 
-A local AI agent built with LangGraph, LangChain, and the Model Context Protocol (MCP). The agent redacts PII from user input before passing it to a tool-enabled GPT-4o agent that can query an in-memory vector store (RAG) or a local MCP tool server.
-
-## Architecture
-
-```
-User message
-    │
-    ▼
-┌─────────────┐    stdio subprocess
-│  RedactNode │──────────────────────────────────────────┐
-│  (PII scrub)│                                          │
-└──────┬──────┘                              ┌───────────┴────────────┐
-       │                                     │  src/mcp.ts            │
-       ▼                                     │  MCP Server (stdio)    │
-┌─────────────┐   tool calls                 │  Tool: get_refund_policy│
-│  AgentNode  │◄────────────────────────────►└────────────────────────┘
-│  (gpt-4o)   │
-└──────┬──────┘   tool calls
-       │◄────────────────────────────────────┐
-       ▼                                     │
-┌─────────────┐                   ┌──────────┴──────────┐
-│  ToolNode   │                   │  src/rag.ts          │
-│  (executor) │                   │  MemoryVectorStore   │
-└─────────────┘                   │  Tool: search_company│
-                                  └─────────────────────-┘
-```
-
-### Files
-
-| File | Role |
-|------|------|
-| `src/mcp.ts` | MCP stdio server — exposes `get_refund_policy` tool |
-| `src/rag.ts` | In-memory RAG — embeds 3 company-history docs, exports `search_company_history` tool |
-| `src/graph.ts` | LangGraph orchestrator — PII redaction → agent loop → tool execution |
-| `src/chat.ts` | Interactive CLI chat loop — readline REPL that reuses one graph session |
+A LangGraph agent that answers questions about insurance and financial documents. PDFs are ingested into a Supabase pgvector store with automatic PII redaction and metadata extraction. At runtime the agent retrieves relevant chunks via semantic search and can also query a local MCP tool server for structured policy data.
 
 ## Prerequisites
 
 - Node.js 18+
-- An OpenAI API key
+- OpenAI API key
+- Anthropic API key (rate-limit fallback)
+- A [Supabase](https://supabase.com) project with the schema below applied
+
+## One-time Supabase setup
+
+Run this SQL once in your Supabase project's **SQL Editor**:
+
+```sql
+create extension if not exists vector;
+
+create table if not exists documents (
+  id        bigserial primary key,
+  content   text,
+  metadata  jsonb,
+  embedding vector(1536)
+);
+
+alter table documents enable row level security;
+create policy "service role full access" on documents
+  using (true) with check (true);
+
+create or replace function match_documents (
+  query_embedding vector(1536),
+  match_count     int     default null,
+  filter          jsonb   default '{}'
+) returns table (
+  id bigint, content text, metadata jsonb, embedding jsonb, similarity float
+)
+language plpgsql as $$
+#variable_conflict use_column
+begin
+  return query
+  select id, content, metadata, (embedding::text)::jsonb,
+         1 - (documents.embedding <=> query_embedding)
+  from documents
+  where metadata @> filter
+  order by documents.embedding <=> query_embedding
+  limit match_count;
+end;
+$$;
+```
 
 ## Setup
 
@@ -47,95 +54,63 @@ User message
 npm install
 ```
 
-Create a `.env` file in the project root:
+Copy `.env.example` to `.env` and fill in all five values:
 
 ```
-OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...   # fallback provider — required for rate-limit fallback
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+SUPABASE_URL=
+SUPABASE_PRIVATE_KEY=   # service role key (not the anon key)
 ```
 
-## Running
+## Usage
 
-### Interactive chat (recommended for exploring)
+### 1. Ingest documents
+
+Drop PDF files into the `data/` folder, then run:
+
+```bash
+npm run ingest
+```
+
+Each PDF is hashed for deduplication, so re-running is safe — already-ingested files are skipped. The ingest pipeline redacts PII and extracts `document_type`, `provider`, and `product_name` metadata from each document before uploading chunks to Supabase.
+
+### 2. Chat
 
 ```bash
 npm run chat
 ```
 
-This starts a live terminal session. Type any question and press Enter:
+An interactive terminal session. Ask questions in plain language — the agent searches the ingested documents and, when relevant, calls the MCP refund-policy tool. You can narrow a search to a specific provider, e.g.:
+
+> *"What does VZP cover for property damage?"*
+
+Type `exit` or press `Ctrl+D` to quit.
+
+## How it works
 
 ```
-Starting up — connecting to MCP server and building RAG index…
-Ready. Type a question or "exit" to quit.
+PDF files
+    │  npm run ingest
+    ▼
+[sha256 dedup] → [pdf-parse] → [gpt-4o-mini: PII redact + metadata] → [Supabase pgvector]
 
-You: how many days do I have for a refund?
-  [tools called] get_refund_policy
-  [tool result]  get_refund_policy → { "policy": "Refunds allowed within 30 days" }
-
-Agent: You have 30 days to request a refund.
-
-You: when was the company founded?
-  [tools called] search_company_history
-  [tool result]  search_company_history → Acme Corp was founded in 1998 by Alice and Bob…
-
-Agent: Acme Corp was founded in 1998.
-
-You: exit
+User message
+    │  npm run chat
+    ▼
+[RedactNode: email regex + gpt-4o-mini name redaction]
+    ▼
+[AgentNode: gpt-4o] ←→ [search_insurance_and_financial_docs  (Supabase RAG)]
+                    ←→ [get_refund_policy  (MCP stdio server)]
 ```
-
-- Each question is answered independently (no memory between turns).
-- Lines starting with `[tools called]` and `[tool result]` show you which tools the agent used and a preview of what they returned.
-- Type `exit`, `quit`, or press `Ctrl+D` to quit cleanly.
-
-### One-shot demo
-
-```bash
-npm run dev
-```
-
-This runs `src/graph.ts` directly via `tsx`. It will:
-
-1. Spawn `src/mcp.ts` as a child process (the MCP server) over stdio
-2. Build the in-memory vector store by embedding 3 company-history strings via `text-embedding-3-small`
-3. Invoke the graph with a hardcoded test message:
-   > "Hi, my name is John Doe and my email is test@test.com. Should I use RAG for company history, or the MCP for the refund policy?"
-4. Print the agent's final response
-
-### Expected output
-
-```
-Building graph and connecting to MCP server…
-
-=== Agent Final Response ===
-For company history, use the RAG tool (search_company_history) — it searches
-Acme Corp's internal knowledge base. For the refund policy, use the MCP tool
-(get_refund_policy) — it returns the official policy directly.
-```
-
-The PII in the test message (`John Doe`, `test@test.com`) is scrubbed by the
-RedactNode before the agent ever sees it.
-
-### Smoke-test the MCP server in isolation
-
-```bash
-npm run mcp
-```
-
-The server starts and listens on stdin for MCP protocol messages. Press `Ctrl-C` to exit.
-
-## Models used
-
-| Step | Model | Purpose |
-|------|-------|---------|
-| Embeddings | `text-embedding-3-small` | Build the RAG vector store at startup |
-| RedactNode | `gpt-4o-mini` | Fast PII name-scrubbing |
-| AgentNode | `gpt-4o` | Main reasoning + tool selection |
 
 ## Stack
 
-- **TypeScript** (ESM, `module: nodenext`)
-- **LangGraph** (`@langchain/langgraph`) — state machine orchestration
-- **LangChain** (`@langchain/core`, `@langchain/openai`, `@langchain/classic`) — LLMs, tools, vector store
-- **MCP SDK** (`@modelcontextprotocol/sdk`) — stdio tool server
-- **`@langchain/mcp-adapters`** — bridges MCP tools into LangChain's tool interface
-- **Zod** — tool input schemas
+| | |
+|---|---|
+| Orchestration | LangGraph |
+| LLMs | OpenAI `gpt-4o` / `gpt-4o-mini`, Anthropic Claude (fallback) |
+| Embeddings | OpenAI `text-embedding-3-small` |
+| Vector store | Supabase pgvector |
+| Tool protocol | MCP (`@modelcontextprotocol/sdk`) |
+| Language | TypeScript, ESM, `module: nodenext` |
