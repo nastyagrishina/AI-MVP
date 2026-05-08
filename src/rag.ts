@@ -29,7 +29,7 @@ export async function createSearchPolicyDocsTool() {
       query: string;
       filter?: Record<string, string>;
     }) => {
-      const results = await store.similaritySearch(query, 5, filter);
+      const results = await store.similaritySearch(query, 10, filter);
       if (results.length === 0) {
         return "NO_RESULTS: No relevant documents found.";
       }

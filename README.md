@@ -23,29 +23,37 @@ create table if not exists documents (
   embedding vector(1536)
 );
 
-alter table documents enable row level security;
-create policy "service role full access" on documents
-  using (true) with check (true);
+-- Grant the service_role (used by the secret/service key) full access.
+-- Without this the REST API returns 403 even though RLS is off.
+grant select, insert, update, delete on documents to service_role;
 
 create or replace function match_documents (
   query_embedding vector(1536),
   match_count     int     default null,
   filter          jsonb   default '{}'
 ) returns table (
-  id bigint, content text, metadata jsonb, embedding jsonb, similarity float
+  id bigint, content text, metadata jsonb, similarity float
 )
 language plpgsql as $$
-#variable_conflict use_column
 begin
   return query
-  select id, content, metadata, (embedding::text)::jsonb,
-         1 - (documents.embedding <=> query_embedding)
+  select
+    documents.id,
+    documents.content,
+    documents.metadata,
+    1 - (documents.embedding <=> query_embedding) as similarity
   from documents
-  where metadata @> filter
+  where documents.metadata @> filter
   order by documents.embedding <=> query_embedding
   limit match_count;
 end;
 $$;
+-- Note: all columns are qualified with the table name (documents.id, documents.content, etc.)
+-- to avoid PL/pgSQL error 42702 "column reference is ambiguous" — PL/pgSQL treats
+-- every name in the RETURNS TABLE(...) clause as an output variable, so an unqualified
+-- column name like `id` is ambiguous between the output variable and the table column.
+
+grant execute on function match_documents to service_role;
 ```
 
 ## Setup
@@ -60,7 +68,7 @@ Copy `.env.example` to `.env` and fill in all five values:
 OPENAI_API_KEY=
 ANTHROPIC_API_KEY=
 SUPABASE_URL=
-SUPABASE_PRIVATE_KEY=   # service role key (not the anon key)
+SUPABASE_PRIVATE_KEY=   # secret key (new format: sb_secret_…) or legacy service_role JWT — not the anon/publishable key
 ```
 
 ## Usage
