@@ -16,7 +16,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { loadMcpTools } from "@langchain/mcp-adapters";
 
-import { createSearchCompanyHistoryTool } from "./rag.js";
+import { createSearchPolicyDocsTool } from "./rag.js";
 
 
 const EMAIL_RE = /\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/g;
@@ -35,7 +35,7 @@ export async function buildGraph() {
     throwOnLoadError: true,
   });
 
-  const ragTool = await createSearchCompanyHistoryTool();
+  const ragTool = await createSearchPolicyDocsTool();
 
   const allTools = [...mcpTools, ragTool];
 
@@ -122,8 +122,10 @@ export async function buildGraph() {
 
   const AGENT_SYSTEM = new SystemMessage(
     "You are a helpful assistant with access to two tools: " +
-      "a company knowledge base (RAG) and a refund policy tool (MCP). " +
+      "a search tool for insurance and financial documents (RAG) and a refund policy tool (MCP). " +
       "Always use the available tools to answer questions. " +
+      "When searching documents you can optionally narrow results by passing a filter " +
+      'such as { "provider": "VZP" } or { "document_type": "insurance" }. ' +
       "If the tools return no relevant information, or if the question is outside " +
       "the scope of what the tools can answer, reply with exactly: " +
       '"[No Answer] Unfortunately, there\'s no information present for this question in the documents." ' +
