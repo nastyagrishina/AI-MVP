@@ -81,7 +81,14 @@ Drop PDF files into the `data/` folder, then run:
 npm run ingest
 ```
 
-Each PDF is hashed for deduplication, so re-running is safe — already-ingested files are skipped. The ingest pipeline redacts PII and extracts `document_type`, `provider`, and `product_name` metadata from each document before uploading chunks to Supabase.
+The ingest pipeline applies a three-layer PII strategy before anything reaches Supabase:
+
+1. **Regex pre-scrub** — strips structured PII (Czech birth numbers, phone numbers, IBANs, emails, policy numbers) from the raw text before any data leaves your system.
+2. **Metadata extraction** (Pass 1, `gpt-4o-mini`) — classifies the document and detects whether it contains personal data, using only the pre-scrubbed first page.
+3. **LLM redaction** (Pass 2, `gpt-4o-mini`, parallel chunks) — only runs for personal documents (contracts, proposals). Handles unstructured PII — names and addresses — that regex cannot reliably catch. Public documents (general terms and conditions, brochures) skip this step entirely.
+4. **Post-LLM regex sweep** — a final safety-net pass to catch any structured PII the LLM may have missed.
+
+The `document_type`, `provider`, `product_name`, and `is_personal` fields are stored as metadata on every chunk. Already-ingested filenames are skipped on re-run.
 
 ### 2. Chat
 
@@ -101,12 +108,22 @@ Type `exit` or press `Ctrl+D` to quit.
 PDF files
     │  npm run ingest
     ▼
-[sha256 dedup] → [pdf-parse] → [gpt-4o-mini: PII redact + metadata] → [Supabase pgvector]
+[pdf-parse]
+    ▼
+[regex pre-scrub]          ← strips birth numbers, phones, IBANs, emails, policy numbers
+    ▼
+[gpt-4o-mini: metadata]    ← Pass 1, first 3k chars only, already pre-scrubbed
+    ▼
+[is_personal?]
+  ├─ NO  → store as-is (public terms/conditions — no LLM redaction needed)
+  └─ YES → [gpt-4o-mini: redaction, parallel chunks]   ← Pass 2, names & addresses only
+                ▼
+           [post-LLM regex sweep]   ← safety net
+    ▼
+[Supabase pgvector]
 
 User message
     │  npm run chat
-    ▼
-[RedactNode: email regex + gpt-4o-mini name redaction]
     ▼
 [AgentNode: gpt-4o] ←→ [search_insurance_and_financial_docs  (Supabase RAG)]
                     ←→ [get_refund_policy  (MCP stdio server)]

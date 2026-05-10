@@ -274,39 +274,49 @@ async function ingest() {
     }
     console.log(`  → Extracted ${rawText.length.toLocaleString()} chars. (${elapsed(t)})`);
 
-    // 2. Pass 1 — metadata from first page only (fast)
+    // 2. Regex pre-scrub — strip structured PII before any LLM call
+    const preScrubbed = regexSweep(rawText);
+    const preScrubCount = (preScrubbed.match(/\[REDACTED\]/g) ?? []).length;
+    if (preScrubCount > 0) {
+      console.log(`  → Regex pre-scrub: ${preScrubCount} item(s) redacted before LLM.`);
+    }
+
+    // 3. Pass 1 — metadata from first page only (fast, pre-scrubbed)
     t = Date.now();
     console.log(`  → Pass 1: extracting metadata from first ${METADATA_CHARS} chars…`);
-    const metadata = await extractMetadata(llm, filename, rawText.slice(0, METADATA_CHARS));
+    const metadata = await extractMetadata(llm, filename, preScrubbed.slice(0, METADATA_CHARS));
     console.log(`  → document_type="${metadata.document_type}", provider="${metadata.provider}", product_name="${metadata.product_name}", is_personal=${metadata.is_personal} (${elapsed(t)})`);
 
-    // 3. Pass 2 — redaction (only for personal documents)
+    // 4. Pass 2 — LLM redaction of names/addresses (only for personal documents)
+    //    Input is already pre-scrubbed so only unstructured PII (names, addresses) remains.
     let finalText: string;
     if (!metadata.is_personal) {
-      console.log(`  → Public document — skipping redaction.`);
-      finalText = rawText;
+      console.log(`  → Public document — skipping LLM redaction.`);
+      finalText = preScrubbed;
     } else {
       t = Date.now();
-      const chunks = chunkText(rawText, REDACTION_CHUNK_CHARS);
+      const chunks = chunkText(preScrubbed, REDACTION_CHUNK_CHARS);
       console.log(`  → Pass 2: redacting ${chunks.length} chunk(s) in parallel (≤${MAX_PARALLEL_REDACTION} at a time)…`);
       const heartbeat = setInterval(() => {
         process.stdout.write(`     still redacting… (${elapsed(t)})\n`);
       }, 10_000);
       try {
-        finalText = await redactDocument(llm, rawText);
+        finalText = await redactDocument(llm, preScrubbed);
       } finally {
         clearInterval(heartbeat);
       }
-      console.log(`  → Redaction done. (${elapsed(t)})`);
+      console.log(`  → LLM redaction done. (${elapsed(t)})`);
 
-      // 4. Regex safety sweep
+      // 5. Post-LLM regex sweep — safety net for anything the LLM missed
       const before = (finalText.match(/\[REDACTED\]/g) ?? []).length;
       finalText = regexSweep(finalText);
       const after = (finalText.match(/\[REDACTED\]/g) ?? []).length;
-      console.log(`  → Regex sweep: ${after - before} additional item(s) caught.`);
+      if (after - before > 0) {
+        console.log(`  → Post-LLM regex sweep: ${after - before} additional item(s) caught.`);
+      }
     }
 
-    // 5. Chunk for embeddings
+    // 7. Chunk for embeddings
     t = Date.now();
     const embeddingChunks = await splitter.createDocuments(
       [finalText],
@@ -322,7 +332,7 @@ async function ingest() {
     );
     console.log(`  → Created ${embeddingChunks.length} embedding chunk(s). (${elapsed(t)})`);
 
-    // 6. Embed + upload to Supabase
+    // 8. Embed + upload to Supabase
     t = Date.now();
     console.log("  → Embedding and uploading to Supabase…");
     const embedHeartbeat = setInterval(() => {
